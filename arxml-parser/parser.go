@@ -210,3 +210,121 @@ func getDataTypes(root *xmlquery.Node) []ComputeMethod {
 	}
 	return computeMethods
 }
+
+func getLastNameFromRef(ref string) string {
+	parts := strings.Split(ref, "/")
+	if len(parts) == 0 { return ref }
+	return parts[len(parts)-1]
+}
+
+func vlan2idmap(vlans []Network) map[string]int32 {
+	idmap := make(map[string]int32)
+	for _, vlan := range vlans {
+		for _, pdu := range vlan.PduRef {
+			if len(pdu.Ref) > 0 {
+				ref := getLastNameFromRef(pdu.Ref)
+				idmap[ref] = pdu.Id
+			}
+		}
+	}
+	return idmap
+}
+
+func getVlanMap(vlans []Network)map[string]string {
+	lookup := make(map[string]string)
+	for _, vlan := range vlans {
+		for _, pdu := range vlan.PduRef {
+			ref := getLastNameFromRef(pdu.Ref)
+			if pdu.Name == ref {
+				lookup[ref] = vlan.Name
+			} else {
+				lookup[ref] = vlan.Name
+				lookup[pdu.Name] = vlan.Name
+			}
+		}
+	}
+	return lookup
+}
+
+func getSignalMap(sigs []ISignal ) map[string]ISignal {
+	lookup := make(map[string]ISignal)
+	for _, signal := range sigs {
+		lookup[signal.Name] = signal
+	}
+	return lookup
+}
+
+func getCompuMap(compus []ComputeMethod) map[string]ComputeMethod {
+	lookup := make(map[string]ComputeMethod)
+	for _, compu := range compus {
+		lookup[compu.Name] = compu
+	}
+	return lookup
+}
+
+func getMessage(root *xmlquery.Node, vlan []Network, isignals []ISignal, compu []ComputeMethod  ) []Message {
+	messages := make([]Message, 0)
+	idMap := vlan2idmap(vlan)
+	vlanMap := getVlanMap(vlan)
+	signalMap := getSignalMap(isignals)
+	compuMap := getCompuMap(compu)
+
+	pdus := getPackage(getPackage(root, "Communication"), "PDUs")
+	sigPdus := xmlquery.Find(pdus, "//I-SIGNAL-I-PDU")
+	for _, sigPdu := range sigPdus {
+		name := getName(sigPdu)
+		length := getIntText(getHeadText(xmlquery.Find(sigPdu, "/LENGTH")))
+		signals := make([]Signal, 0)
+		mappings := xmlquery.Find(sigPdu, "//I-SIGNAL-TO-I-PDU-MAPPING")
+		for _, mapping := range mappings {
+			ref, referr := getHeadText(xmlquery.Find(mapping, "/I-SIGNAL-REF"))
+			sname := getName(mapping)
+			if referr == nil {
+				sname = getLastNameFromRef(ref)
+			}
+			byteorder, byteerr := getHeadText(xmlquery.Find(mapping, "/PACKING-BYTE-ORDER"))
+			if byteerr == nil {
+				endian := BIG_ENDIAN
+				if byteorder == "MOST-SIGNIFICANT-BYTE-LAST" {
+					endian = LITTLE_ENDIAN
+				}
+				start := getIntText(getHeadText(xmlquery.Find(mapping, "/START-POSITION")))
+				startBit := start
+				if endian == BIG_ENDIAN {
+					startBit = start - (start % 8) + 7 - (start % 8)
+				}
+				isignal, ok := signalMap[sname]
+				if ok {
+					if len(isignal.Ref) == 0 {
+						signals = append(signals, NewSignal(sname, int32(endian), startBit, isignal.Length,1,0, 0,0 ))
+					} else {
+						compu, compuOk := compuMap[isignal.Ref]
+						if compuOk && len(compu.Scale) > 0 {
+							scale := compu.Scale[0]
+							intercept := float32(scale.Numerators.V1 / scale.Denominator)
+							slope := float32(scale.Numerators.V2 / scale.Denominator)
+							signals = append(signals, NewSignal(sname, int32(endian), startBit, isignal.Length, slope, intercept, scale.Max, scale.Min))
+						} else {
+							signals = append(signals, NewSignal(sname, int32(endian), startBit, isignal.Length, 1, 0,0,0))
+						}
+					}
+				}
+			}
+		}
+		id, _ := idMap[name]
+		vlan, _ := vlanMap[name]
+		messages = append(messages, NewMessage(name, id, vlan, length, signals))
+	}
+	return messages
+}
+
+func Parse(filePath string) []Message {
+	doc, err := parseXml(filePath)
+	if err != nil {
+		panic(err)
+	}
+	vlan := getNetwork(doc)
+	isignal := getISignal(doc)
+	compu := getDataTypes(doc)
+	return getMessage(doc,vlan, isignal, compu)
+}
