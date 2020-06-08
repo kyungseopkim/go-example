@@ -1,0 +1,17 @@
+
+[mqtt]
+server="localhost"
+port=1883
+topic="#"
+clientId="test-cli"
+keepAlive=2
+qos=1
+
+[influx]
+host="localhost:8086"
+precision="ms"
+db="mydb"
+retention="twoWeeks"
+
+[arxml]
+filename=parsed_arxml_GPS_31.json
